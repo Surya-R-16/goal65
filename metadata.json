@@ -1,0 +1,7 @@
+{
+  "name": "NutriVoice",
+  "description": "A voice-first calorie and health tracker PWA powered by Gemini. Track meals, get insights, and manage reminders.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
