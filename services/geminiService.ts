@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { FoodItem, MealType, UserSettings } from "../types";
 
 // In a real production app, we would proxy this through a backend.
@@ -10,7 +10,7 @@ const getClient = () => {
   if (!apiKey) {
     throw new Error("API Key not found. Please set the API_KEY environment variable.");
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenerativeAI(apiKey);
 };
 
 // Prompt to handle audio analysis, NLU, and nutrition estimation in one go for efficiency
@@ -39,24 +39,24 @@ Return strict JSON matching the schema.
 `;
 
 const RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
+  type: SchemaType.OBJECT,
   properties: {
-    transcript: { type: Type.STRING, description: "Verbatim transcript of the user audio." },
-    intent: { type: Type.STRING, enum: ["log_food", "unknown"], description: "The user's intent." },
-    meal: { type: Type.STRING, enum: ["Breakfast", "Lunch", "Dinner", "Snack"], description: "The meal time." },
+    transcript: { type: SchemaType.STRING, description: "Verbatim transcript of the user audio." },
+    intent: { type: SchemaType.STRING, enum: ["log_food", "unknown"], description: "The user's intent." },
+    meal: { type: SchemaType.STRING, enum: ["Breakfast", "Lunch", "Dinner", "Snack"], description: "The meal time." },
     items: {
-      type: Type.ARRAY,
+      type: SchemaType.ARRAY,
       items: {
-        type: Type.OBJECT,
+        type: SchemaType.OBJECT,
         properties: {
-          name: { type: Type.STRING, description: "Name of the dish in English (e.g., 'Curd Rice' for 'Thayir Sadam')" },
-          quantity: { type: Type.NUMBER },
-          unit: { type: Type.STRING },
-          calories: { type: Type.NUMBER, description: "Estimated calories" },
-          protein_g: { type: Type.NUMBER },
-          carbs_g: { type: Type.NUMBER },
-          fat_g: { type: Type.NUMBER },
-          confidence: { type: Type.NUMBER, description: "Confidence score 0-1" }
+          name: { type: SchemaType.STRING, description: "Name of the dish in English (e.g., 'Curd Rice' for 'Thayir Sadam')" },
+          quantity: { type: SchemaType.NUMBER },
+          unit: { type: SchemaType.STRING },
+          calories: { type: SchemaType.NUMBER, description: "Estimated calories" },
+          protein_g: { type: SchemaType.NUMBER },
+          carbs_g: { type: SchemaType.NUMBER },
+          fat_g: { type: SchemaType.NUMBER },
+          confidence: { type: SchemaType.NUMBER, description: "Confidence score 0-1" }
         }
       }
     }
@@ -68,36 +68,69 @@ export async function analyzeAudioLog(audioBase64: string, mimeType: string): Pr
   meal: MealType;
   items: FoodItem[];
 }> {
-  const client = getClient();
   const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
   try {
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: audioBase64
-            }
-          },
-          {
-            text: `Analyze this audio log. Current Time: ${currentTime}. Extract food items, estimate nutrition, and determine meal type based on time if not specified.`
-          }
-        ]
-      },
-      config: {
+    let resultText = "";
+
+    if (import.meta.env.DEV) {
+      console.log("Dev Mode: Using Client SDK");
+      const client = getClient();
+      const model = client.getGenerativeModel({
+        model: 'gemini-2.5-flash',
         systemInstruction: SYSTEM_INSTRUCTION,
-        responseMimeType: "application/json",
-        responseSchema: RESPONSE_SCHEMA
+      });
+
+      const response = await model.generateContent({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  mimeType: mimeType,
+                  data: audioBase64
+                }
+              },
+              {
+                text: `Analyze this audio log. Current Time: ${currentTime}. Extract food items, estimate nutrition, and determine meal type based on time if not specified.`
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: RESPONSE_SCHEMA
+        }
+      });
+      resultText = response.response.text() || "";
+    } else {
+      // Production: Use Secure Proxy
+      console.log("Production Mode: Using Serverless Proxy");
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          audioBase64,
+          mimeType,
+          currentTime
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to analyze audio");
       }
-    });
+      resultText = await response.text();
+    }
 
-    const resultText = response.text;
+    console.log("DEBUG: Raw Gemini Response:", resultText); // Log raw text
+
     if (!resultText) throw new Error("Empty response from Gemini");
-
     const parsed = JSON.parse(resultText);
+    console.log("DEBUG: Parsed JSON:", parsed); // Log parsed object
 
     return {
       transcript: parsed.transcript || "No transcript available",
@@ -115,6 +148,7 @@ export async function analyzeAudioLog(audioBase64: string, mimeType: string): Pr
 
 export async function generateHealthTip(dailyLogs: any[], settings: UserSettings): Promise<string> {
   const client = getClient();
+  const model = client.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
   const userContext = `
     User Profile:
@@ -134,11 +168,8 @@ export async function generateHealthTip(dailyLogs: any[], settings: UserSettings
   `;
 
   try {
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-    return response.text || "Drink more water today!";
+    const response = await model.generateContent(prompt);
+    return response.response.text() || "Drink more water today!";
   } catch (e) {
     return "Stay hydrated and eat balanced meals!";
   }
@@ -146,6 +177,7 @@ export async function generateHealthTip(dailyLogs: any[], settings: UserSettings
 
 export async function generateDailyAnalysis(dailyLogs: any[], settings: UserSettings): Promise<string> {
   const client = getClient();
+  const model = client.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
   const prompt = `
     User Profile: ${settings.name}, Goal: ${settings.goal}, Target: ${settings.dailyCalorieTarget} kcal.
@@ -159,11 +191,8 @@ export async function generateDailyAnalysis(dailyLogs: any[], settings: UserSett
   `;
 
   try {
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-    return response.text || "Good job tracking today! Keep focused on your goals.";
+    const response = await model.generateContent(prompt);
+    return response.response.text() || "Good job tracking today! Keep focused on your goals.";
   } catch (e) {
     return "Unable to generate analysis right now.";
   }
