@@ -25,6 +25,7 @@ export interface FoodLog {
   items: FoodItem[];
   totalCalories: number;
   transcript: string;
+  notes?: string;
   method: 'voice' | 'manual';
 }
 
